@@ -47,7 +47,10 @@ If it works on local but failed on cloud. Check your logs in the application ins
 
 ## Next steps
 
-Please visit [Samples](https://github.com/Azure/azure-sdk-for-python/tree/main/sdk/agentserver/azure-ai-agentserver-claude/samples) folder. There are several samples for you to build your agent with azure-ai-agentserver-claude
+Please visit [Samples](https://github.com/Azure/azure-sdk-for-python/tree/main/sdk/agentserver/azure-ai-agentserver-claude/samples) folder for examples:
+
+- **[basic_simple](samples/basic_simple)** - A simple Claude agent with basic setup
+- **[calculator_agent](samples/calculator_agent)** - A calculator agent demonstrating tool calling with Claude SDK
 
 
 ## Contributing

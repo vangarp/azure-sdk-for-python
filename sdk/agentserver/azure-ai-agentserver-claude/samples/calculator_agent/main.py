@@ -28,7 +28,7 @@ async def add(args):
     }
 
 
-@tool("multiply", "Multiply two numbers together", {"a": int, "b": int})
+@tool("multiply", "Multiplies two numbers together", {"a": int, "b": int})
 async def multiply(args):
     """Multiply a and b.
     
@@ -45,7 +45,7 @@ async def multiply(args):
     }
 
 
-@tool("divide", "Divide two numbers", {"a": int, "b": int})
+@tool("divide", "Divides two numbers", {"a": int, "b": int})
 async def divide(args):
     """Divide a by b.
     
