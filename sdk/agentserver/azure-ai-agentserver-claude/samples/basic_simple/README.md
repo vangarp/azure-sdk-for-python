@@ -53,5 +53,5 @@ curl -N \
 ## Next Steps
 
 - Check out other samples in the `samples` directory
-- Read the [Claude SDK documentation](https://platform.claude.com/docs/en/agent-sdk/python)
+- Read the [Claude Agent SDK documentation](https://github.com/anthropics/claude-agent-sdk-python)
 - Explore the [Azure AI Agent Server documentation](https://github.com/Azure/azure-sdk-for-python/tree/main/sdk/agentserver)

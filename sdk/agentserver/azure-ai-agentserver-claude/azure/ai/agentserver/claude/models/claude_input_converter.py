@@ -76,7 +76,7 @@ class ClaudeInputConverter:
             raise TypeError(f"Unsupported input type: {type(input)}")
         except Exception as e:
             logger.error("Error processing messages: %s", e, exc_info=True)
-            raise Exception(f"Error processing messages: {e}") from e  # pylint: disable=broad-exception-raised
+            raise ValueError(f"Error processing messages: {e}") from e
 
     def _is_implicit_user_message(self, item: Dict) -> bool:
         return "content" in item and "role" not in item and "type" not in item
@@ -86,4 +86,4 @@ class ClaudeInputConverter:
             text_content = content_item.get("text")
             if isinstance(text_content, str):
                 return text_content
-        return ""  # type: ignore
+        return ""
