@@ -55,6 +55,11 @@ fix = false
 known-first-party = ["azure.ai.agentserver.claude"]
 combine-as-imports = true
 
+[tool.pytest.ini_options]
+markers = [
+    "unit: marks tests as unit tests (deselect with '-m \"not unit\"')",
+]
+
 [tool.azure-sdk-build]
 breaking = false   # incompatible python version
 pyright = false
