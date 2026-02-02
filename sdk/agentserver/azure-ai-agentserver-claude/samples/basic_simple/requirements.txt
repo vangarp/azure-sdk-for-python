@@ -1,0 +1,4 @@
+python-dotenv>=1.0.0
+claude-agent-sdk
+azure-ai-agentserver-core
+azure-ai-agentserver-claude
