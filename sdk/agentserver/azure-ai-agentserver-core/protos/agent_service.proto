@@ -1,0 +1,130 @@
+// ---------------------------------------------------------
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// ---------------------------------------------------------
+//
+// Wire protocol definition for the FoundryCBAgent ↔ Adapter boundary.
+//
+// This .proto defines the gRPC service and messages used for out-of-process
+// adapter communication. The messages mirror the Python dataclasses in
+// azure.ai.agentserver.core.wire.models but in protobuf form.
+//
+// Adapters in any language can implement the AgentAdapterService to integrate
+// with the FoundryCBAgent server.
+
+syntax = "proto3";
+
+package azure.ai.agentserver.v1;
+
+// ---------------------------------------------------------------------------
+// Service definition
+// ---------------------------------------------------------------------------
+
+// AgentAdapterService is implemented by adapter backends (e.g. LangGraph,
+// AgentFramework, Semantic Kernel, etc.) and called by the FoundryCBAgent
+// core server.
+service AgentAdapterService {
+  // Non-streaming agent invocation.
+  rpc Run(AgentRequest) returns (AgentResponse);
+
+  // Server-streaming agent invocation.  The adapter yields events as
+  // the agent produces output.
+  rpc RunStream(AgentRequest) returns (stream AgentStreamEvent);
+}
+
+// ---------------------------------------------------------------------------
+// Request
+// ---------------------------------------------------------------------------
+
+message AgentRequest {
+  string response_id = 1;
+  string conversation_id = 2;
+  bool stream = 3;
+  optional string instructions = 4;
+  repeated InputMessage messages = 5;
+  map<string, string> metadata = 6;
+  optional AgentInfo agent = 7;
+
+  // Reserved for future extensions.  Adapters should ignore unknown fields.
+  map<string, bytes> extensions = 15;
+}
+
+message InputMessage {
+  string role = 1;  // "user", "assistant", "system", "tool"
+  string content = 2;
+  repeated ContentPart content_parts = 3;
+  optional string tool_call_id = 4;  // set when role == "tool"
+  repeated ToolCallInfo tool_calls = 5;  // set when role == "assistant" with calls
+}
+
+message ContentPart {
+  string type = 1;  // "text", "image", "audio", "file"
+  optional string text = 2;
+  map<string, bytes> extra = 3;
+}
+
+message ToolCallInfo {
+  string id = 1;
+  string name = 2;
+  string arguments = 3;  // JSON-encoded
+}
+
+message AgentInfo {
+  optional string name = 1;
+  optional string version = 2;
+  optional string type = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Response (non-streaming)
+// ---------------------------------------------------------------------------
+
+message AgentResponse {
+  string status = 1;  // "completed", "failed", "incomplete"
+  repeated OutputItem output = 2;
+  optional ErrorInfo error = 3;
+}
+
+message OutputItem {
+  string type = 1;  // "text_message", "function_call", "function_call_output"
+
+  // text_message fields
+  optional string role = 2;     // "assistant", "user", "system"
+  optional string content = 3;
+  repeated ContentPart content_parts = 4;
+
+  // function_call fields
+  optional string call_id = 5;
+  optional string name = 6;
+  optional string arguments = 7;  // JSON-encoded
+
+  // function_call_output fields
+  optional string output = 8;
+}
+
+message ErrorInfo {
+  string code = 1;
+  string message = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Streaming events
+// ---------------------------------------------------------------------------
+
+message AgentStreamEvent {
+  // Event type discriminator.  See StreamEventType in wire/models.py.
+  string type = 1;
+
+  int32 output_index = 2;
+
+  // For delta events (text_delta, function_call_arguments_delta)
+  optional string delta = 3;
+
+  // For output_item_added / output_item_done
+  optional OutputItem item = 4;
+
+  // For completed event — the final response summary
+  optional AgentResponse response = 5;
+
+  // For error event
+  optional ErrorInfo error = 6;
+}

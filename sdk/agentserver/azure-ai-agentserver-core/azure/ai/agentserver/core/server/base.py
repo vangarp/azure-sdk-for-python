@@ -2,12 +2,10 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # ---------------------------------------------------------
 # pylint: disable=broad-exception-caught,unused-argument,logging-fstring-interpolation,too-many-statements,too-many-return-statements
-import inspect
 import json
 import os
 import traceback
-from abc import abstractmethod
-from typing import Any, AsyncGenerator, Generator, Union
+from typing import Optional, Union
 
 import uvicorn
 from opentelemetry import context as otel_context, trace
@@ -26,7 +24,9 @@ from ..models import (
     Response as OpenAIResponse,
     ResponseStreamEvent,
 )
+from .backend import BackendClient
 from .common.agent_run_context import AgentRunContext
+from .protocol_translator import request_to_wire, wire_response_to_openai, wire_stream_to_openai
 
 logger = get_logger()
 DEBUG_ERRORS = os.environ.get(Constants.AGENT_DEBUG_ERRORS, "false").lower() == "true"
@@ -82,7 +82,21 @@ class AgentRunContextMiddleware(BaseHTTPMiddleware):
 
 
 class FoundryCBAgent:
-    def __init__(self):
+    """Core server that accepts OpenAI Responses API requests and delegates
+    to a pluggable ``BackendClient`` for framework-specific execution.
+
+    The backend communicates over a simplified wire protocol (gRPC, HTTP,
+    or in-process via ``LocalBackend``).  The core server handles all
+    OpenAI event lifecycle translation, tracing, SSE serialization, and
+    error handling.
+
+    :param backend: The backend client used to communicate with an adapter.
+    :type backend: BackendClient
+    """
+
+    def __init__(self, backend: BackendClient):
+        self._backend = backend
+
         async def runs_endpoint(request):
             # Set up tracing context and span
             context = request.state.agent_run_context
@@ -98,53 +112,25 @@ class FoundryCBAgent:
                     context_carrier = {}
                     TraceContextTextMapPropagator().inject(context_carrier)
 
-                    resp = await self.agent_run(context)
+                    # Convert OpenAI request to wire format
+                    wire_request = request_to_wire(context)
 
-                    if inspect.isgenerator(resp):
-                        # Prefetch first event to allow 500 status if generation fails immediately
+                    if context.stream:
+                        # Streaming path: delegate to backend, translate wire
+                        # events to OpenAI SSE events
                         try:
-                            first_event = next(resp)
-                        except Exception as e:  # noqa: BLE001
-                            err_msg = str(e) if DEBUG_ERRORS else "Internal error"
-                            logger.error("Generator initialization failed: %s\n%s", e, traceback.format_exc())
-                            return JSONResponse({"error": err_msg}, status_code=500)
-
-                        def gen():
-                            ctx = TraceContextTextMapPropagator().extract(carrier=context_carrier)
-                            token = otel_context.attach(ctx)
-                            error_sent = False
-                            try:
-                                # yield prefetched first event
-                                yield _event_to_sse_chunk(first_event)
-                                for event in resp:
-                                    yield _event_to_sse_chunk(event)
-                            except Exception as e:  # noqa: BLE001
-                                err_msg = str(e) if DEBUG_ERRORS else "Internal error"
-                                logger.error("Error in non-async generator: %s\n%s", e, traceback.format_exc())
-                                payload = {"error": err_msg}
-                                yield f"event: error\ndata: {json.dumps(payload)}\n\n"
-                                yield "data: [DONE]\n\n"
-                                error_sent = True
-                            finally:
-                                logger.info("End of processing CreateResponse request:")
-                                otel_context.detach(token)
-                                if not error_sent:
-                                    yield "data: [DONE]\n\n"
-
-                        return StreamingResponse(gen(), media_type="text/event-stream")
-                    if inspect.isasyncgen(resp):
-                        # Prefetch first async event to allow early 500
-                        try:
-                            first_event = await resp.__anext__()
+                            wire_events = self._backend.run_stream(wire_request)
+                            openai_events = wire_stream_to_openai(wire_events, context)
+                            # Prefetch first event to allow early 500
+                            first_event = await openai_events.__anext__()
                         except StopAsyncIteration:
-                            # No items produced; treat as empty successful stream
                             def empty_gen():
                                 yield "data: [DONE]\n\n"
 
                             return StreamingResponse(empty_gen(), media_type="text/event-stream")
                         except Exception as e:  # noqa: BLE001
                             err_msg = str(e) if DEBUG_ERRORS else "Internal error"
-                            logger.error("Async generator initialization failed: %s\n%s", e, traceback.format_exc())
+                            logger.error("Streaming initialization failed: %s\n%s", e, traceback.format_exc())
                             return JSONResponse({"error": err_msg}, status_code=500)
 
                         async def gen_async():
@@ -154,11 +140,11 @@ class FoundryCBAgent:
                             try:
                                 # yield prefetched first event
                                 yield _event_to_sse_chunk(first_event)
-                                async for event in resp:
+                                async for event in openai_events:
                                     yield _event_to_sse_chunk(event)
                             except Exception as e:  # noqa: BLE001
                                 err_msg = str(e) if DEBUG_ERRORS else "Internal error"
-                                logger.error("Error in async generator: %s\n%s", e, traceback.format_exc())
+                                logger.error("Error in streaming: %s\n%s", e, traceback.format_exc())
                                 payload = {"error": err_msg}
                                 yield f"event: error\ndata: {json.dumps(payload)}\n\n"
                                 yield "data: [DONE]\n\n"
@@ -170,10 +156,13 @@ class FoundryCBAgent:
                                     yield "data: [DONE]\n\n"
 
                         return StreamingResponse(gen_async(), media_type="text/event-stream")
+
+                    # Non-streaming path: delegate to backend, translate response
+                    wire_response = await self._backend.run(wire_request)
+                    openai_response = wire_response_to_openai(wire_response, context)
                     logger.info("End of processing CreateResponse request.")
-                    return JSONResponse(resp.as_dict())
+                    return JSONResponse(openai_response.as_dict())
                 except Exception as e:
-                    # TODO: extract status code from exception
                     logger.error(f"Error processing CreateResponse request: {traceback.format_exc()}")
                     return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -215,12 +204,6 @@ class FoundryCBAgent:
                         uv_logger.propagate = False
 
         self.tracer = None
-
-    @abstractmethod
-    async def agent_run(
-        self, context: AgentRunContext
-    ) -> Union[OpenAIResponse, Generator[ResponseStreamEvent, Any, Any], AsyncGenerator[ResponseStreamEvent, Any]]:
-        raise NotImplementedError
 
     async def agent_liveness(self, request) -> Union[Response, dict]:
         return Response(status_code=200)
@@ -273,16 +256,12 @@ class FoundryCBAgent:
             if app_insights_conn_str:
                 self.setup_application_insights_exporter(app_insights_conn_str, provider)
             trace.set_tracer_provider(provider)
-            self.init_tracing_internal(exporter_endpoint=exporter, app_insights_conn_str=app_insights_conn_str)
         self.tracer = trace.get_tracer(__name__)
 
     def get_trace_attributes(self):
         return {
             "service.name": "azure.ai.agentserver",
         }
-
-    def init_tracing_internal(self, exporter_endpoint=None, app_insights_conn_str=None):
-        pass
 
     def setup_application_insights_exporter(self, connection_string, provider):
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
